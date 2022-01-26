@@ -1,8 +1,12 @@
 package com.example.customdocumentcropper.ui
 
 import android.Manifest
+import android.animation.Animator
+import android.animation.AnimatorSet
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.pm.PackageManager
+import android.media.MediaPlayer
 import android.net.Uri
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
@@ -12,15 +16,18 @@ import android.util.Log
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewTreeObserver
+import android.view.animation.AccelerateDecelerateInterpolator
+import android.widget.ImageView
+import android.widget.RelativeLayout
+import android.widget.SeekBar
 import android.widget.Toast
 import androidx.camera.core.*
-import androidx.camera.core.impl.CaptureProcessor
-import androidx.camera.core.impl.ImageInfoProcessor
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.example.customdocumentcropper.R
 import com.example.customdocumentcropper.databinding.ActivityCameraBinding
+import com.example.customdocumentcropper.ui.custom.VerticalSeekBar
 import com.google.common.util.concurrent.ListenableFuture
 import java.io.File
 import java.text.SimpleDateFormat
@@ -30,12 +37,15 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 class CameraActivity : AppCompatActivity() {
+    private var audioPlayer: MediaPlayer?=null
+    private var focusView: ImageView?=null
     private lateinit var cameraControl: CameraControl
     private lateinit var outputDirectory: File
     private lateinit var cameraExecutor: ExecutorService
     private lateinit var binding: ActivityCameraBinding
     private var imageCapture: ImageCapture? = null
     private var flashState:Boolean=false
+    private var rearCameraEnabled:Boolean=true;
 
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -45,18 +55,48 @@ class CameraActivity : AppCompatActivity() {
         setContentView(view)
 
         if (allPermissionsGranted()) {
-            startCamera()
+            validateCameraBeforeStarting()
         } else {
             ActivityCompat.requestPermissions(
                 this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS)
         }
+
+        audioPlayer = MediaPlayer.create(this, R.raw.camera_click_sound);
         outputDirectory = getOutputDirectory()
         cameraExecutor = Executors.newSingleThreadExecutor()
         setupClickListeners()
         setupTouchListeners()
         //auto focus after every 2 seconds
         autofocusAfterFixedInterval();
+        setupZoom();
     }
+
+    /*
+    Zooming up to 10x in the camera. The zoom values that can be provided to cameraControl can only be between 0 to 1.
+    The seekbar calculation has been made in such a way to support that.
+    */
+    private fun setupZoom() {
+        val max = 100
+        val min = 10
+        val step = 1
+        binding.zoomSeek.max = (max-min)/step;
+
+        binding.zoomSeek.setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener{
+            override fun onProgressChanged(seekbar: SeekBar?, progress: Int, fromUser: Boolean) {
+                val value: Int = min + progress * step
+                cameraControl.setLinearZoom(value / 100f)
+                binding.txtZoomScale.text = ((value) / 10f).toString() + "x"
+            }
+            override fun onStartTrackingTouch(seek: SeekBar) {
+
+            }
+
+            override fun onStopTrackingTouch(seek: SeekBar) {
+
+            }
+        })
+    }
+
 
     private fun autofocusAfterFixedInterval() {
         Handler(Looper.getMainLooper()).postDelayed({
@@ -80,10 +120,9 @@ class CameraActivity : AppCompatActivity() {
         }, 2000)
     }
 
+    //Focusing on the touched point on the preview window
     @SuppressLint("ClickableViewAccessibility")
     private fun setupTouchListeners() {
-
-        //Focusing on the touched point on the preview window
         binding.viewFinder.afterMeasured {
             binding.viewFinder.setOnTouchListener { _, event ->
                 return@setOnTouchListener when (event.action) {
@@ -105,6 +144,7 @@ class CameraActivity : AppCompatActivity() {
                                     disableAutoCancel()
                                 }.build()
                             )
+                            displayFocusPoint(event.x, event.y)
                         } catch (e: CameraInfoUnavailableException) {
                             Log.d("ERROR", "cannot access camera", e)
                         }
@@ -116,10 +156,31 @@ class CameraActivity : AppCompatActivity() {
         }
     }
 
+    //To display a square where the user focuses the camera
+    private fun displayFocusPoint(x: Float, y: Float) {
+        if(focusView!=null)  binding.layoutMain.removeView(focusView)
+        focusView = ImageView(this)
+        focusView?.setImageResource(R.drawable.icon_square)
+        val params = RelativeLayout.LayoutParams(80,80);
+        params.leftMargin = x.toInt()-40;
+        params.topMargin = y.toInt()-40;
+        focusView?.layoutParams = params
+        binding.layoutMain.addView(focusView)
+        focusView?.requestLayout()
+
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (focusView!=null) binding.layoutMain.removeView(focusView)
+            focusView = null
+        }, 1000)
+
+    }
+
     private fun setupClickListeners() {
         //capturing image
         binding.btnCapturePhoto.setOnClickListener {
             takePhoto()
+            audioPlayer?.start()
+            animateShutter()
         }
 
         //handling flash toggle
@@ -135,6 +196,39 @@ class CameraActivity : AppCompatActivity() {
                 }
             }, cameraExecutor /* Executor where the runnable callback code is run */)
         }
+
+        //changing camera
+        binding.btnChangeCamera.setOnClickListener{
+            rearCameraEnabled = !rearCameraEnabled
+            if (rearCameraEnabled) startCamera(CameraSelector.DEFAULT_BACK_CAMERA) else startCamera(CameraSelector.DEFAULT_FRONT_CAMERA)
+        }
+    }
+
+    private fun animateShutter() {
+        binding.btnCapturePhoto.animate()
+            .scaleX(.7f)
+            .scaleY(.7f)
+            .setListener(object: Animator.AnimatorListener{
+                override fun onAnimationStart(p0: Animator?) {
+                }
+
+                override fun onAnimationEnd(p0: Animator?) {
+                    binding.btnCapturePhoto.animate()
+                        .scaleX(1f)
+                        .scaleY(1f)
+                        .setInterpolator(AccelerateDecelerateInterpolator()).duration = 150
+                }
+
+                override fun onAnimationCancel(p0: Animator?) {
+
+                }
+
+                override fun onAnimationRepeat(p0: Animator?) {
+
+                }
+            })
+            .setInterpolator(AccelerateDecelerateInterpolator()).duration = 150
+
     }
 
     private fun takePhoto() {
@@ -167,14 +261,24 @@ class CameraActivity : AppCompatActivity() {
             })
     }
 
-    private fun startCamera() {
+    private fun checkCameraFront(): Boolean {
+        return packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_FRONT)
+    }
+
+    private fun checkCameraRear(): Boolean {
+        return packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_FRONT)
+    }
+
+    private fun startCamera(cameraSelector: CameraSelector) {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+
 
         cameraProviderFuture.addListener(Runnable {
             // Used to bind the lifecycle of cameras to the lifecycle owner
             val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
             // Preview
             val preview = Preview.Builder()
+                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
                 .build()
                 .also {
                     it.setSurfaceProvider(binding.viewFinder.surfaceProvider)
@@ -183,7 +287,7 @@ class CameraActivity : AppCompatActivity() {
                 .build()
 
             // Select back camera as a default
-            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+            val cameraSelector = cameraSelector
 
             try {
                 // Unbind use cases before rebinding
@@ -194,7 +298,6 @@ class CameraActivity : AppCompatActivity() {
                     this, cameraSelector, preview, imageCapture)
 
                 cameraControl = camera.cameraControl
-
 
             } catch(exc: Exception) {
                 Log.e(TAG, "Use case binding failed", exc)
@@ -223,7 +326,7 @@ class CameraActivity : AppCompatActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_CODE_PERMISSIONS) {
             if (allPermissionsGranted()) {
-                startCamera()
+                validateCameraBeforeStarting()
             } else {
                 Toast.makeText(this,
                     "Permissions not granted by the user.",
@@ -231,6 +334,29 @@ class CameraActivity : AppCompatActivity() {
                 finish()
             }
         }
+    }
+
+    private fun validateCameraBeforeStarting() {
+        if(checkCameraRear() && checkCameraFront()){
+            rearCameraEnabled = true
+            startCamera(CameraSelector.DEFAULT_BACK_CAMERA)
+        }else{
+            when {
+                checkCameraFront() -> {
+                    rearCameraEnabled = false
+                    startCamera(CameraSelector.DEFAULT_FRONT_CAMERA)
+                }
+                checkCameraRear() -> {
+                    rearCameraEnabled = true
+                    startCamera(CameraSelector.DEFAULT_BACK_CAMERA)
+                }
+                else -> {
+                    Toast.makeText(this, "Error starting camera!", Toast.LENGTH_LONG).show()
+                    finish()
+                }
+            }
+        }
+
     }
 
     private inline fun View.afterMeasured(crossinline block: () -> Unit) {

@@ -1,0 +1,13 @@
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android" >
+
+    <item android:drawable="@drawable/icon_zoom_thumb">
+        <shape>
+            <size
+                android:height="16dp"
+                android:width="16dp" />
+            <solid android:color="@android:color/transparent" />
+        </shape>
+    </item>
+
+
+</layer-list>
